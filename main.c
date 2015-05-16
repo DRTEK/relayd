@@ -704,7 +704,7 @@ static int usage(const char *progname)
 			"	-D		Enable DHCP forwarding\n"
 			"	-P		Disable DHCP options parsing\n"
 			"	-L <ipaddr>	Enable local access using <ipaddr> as source address\n"
-			" 	this is edited on 22.04.2015							"
+			" 	this is edited on 16.05.2015							"
 			"\n",
 		progname);
 	return -1;
