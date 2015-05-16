@@ -35,7 +35,7 @@ static LIST_HEAD(pending_routes);
 LIST_HEAD(interfaces);
 int debug;
 
-static int host_timeout;
+static float host_timeout;
 static int host_ping_tries;
 static int inet_sock;
 static int forward_bcast;
@@ -127,7 +127,7 @@ static void del_host(struct relayd_host *host)
 
 	DPRINTF(1, "%s: deleting host "IP_FMT" ("MAC_FMT")\n", host->rif->ifname,
 		IP_BUF(host->ipaddr), MAC_BUF(host->lladdr));
-
+	system(/www/cgi-bin/disconnect.sh IP_BUF(ipaddr) MAC_BUF(lladdr));	
 	list_for_each_entry_safe(route, tmp, &host->routes, list) {
 		relayd_del_route(host, route);
 		list_del(&route->list);
@@ -280,7 +280,7 @@ static struct relayd_host *add_host(struct relayd_interface *rif, const uint8_t 
 
 	DPRINTF(1, "%s: adding host "IP_FMT" ("MAC_FMT")\n", rif->ifname,
 			IP_BUF(ipaddr), MAC_BUF(lladdr));
-
+	system(/www/cgi-bin/connect.sh IP_BUF(ipaddr) MAC_BUF(lladdr));
 	host = calloc(1, sizeof(*host));
 	INIT_LIST_HEAD(&host->routes);
 	host->rif = rif;
