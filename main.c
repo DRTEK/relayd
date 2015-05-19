@@ -28,6 +28,7 @@
 #include <errno.h>
 #include <signal.h>
 #include <string.h>
+#include <limits.h>
 
 #include "relayd.h"
 
@@ -35,15 +36,26 @@ static LIST_HEAD(pending_routes);
 LIST_HEAD(interfaces);
 int debug;
 
-static float host_timeout;
+static int host_timeout;
 static int host_ping_tries;
 static int inet_sock;
 static int forward_bcast;
 static int forward_dhcp;
 static int parse_dhcp;
 
+/* XXX: Changes for drtek on 16-05-2015 */
+#define EXTRA_LEN	32	/* To store ip and mac that is being passed to the script */
+static char *connect_script;
+static int c_scriptlen;
+static char *disconnect_script;
+static int d_scriptlen;
+static int disconnect_ping_timeout;
+/* XXX: End Changes for drtek on 16-05-2015 */
+
 uint8_t local_addr[4];
 int local_route_table;
+
+
 
 struct relayd_pending_route {
 	struct relayd_route rt;
@@ -126,8 +138,8 @@ static void del_host(struct relayd_host *host)
 	struct relayd_route *route, *tmp;
 
 	DPRINTF(1, "%s: deleting host "IP_FMT" ("MAC_FMT")\n", host->rif->ifname,
-		IP_BUF(host->ipaddr), MAC_BUF(host->lladdr));
-	system(/www/cgi-bin/disconnect.sh IP_BUF(ipaddr) MAC_BUF(lladdr));	
+			IP_BUF(host->ipaddr), MAC_BUF(host->lladdr));
+
 	list_for_each_entry_safe(route, tmp, &host->routes, list) {
 		relayd_del_route(host, route);
 		list_del(&route->list);
@@ -138,6 +150,13 @@ static void del_host(struct relayd_host *host)
 	uloop_timeout_cancel(&host->timeout);
 	list_del(&host->list);
 	free(host);
+	/* XXX: Changes for drtek on 16-05-2015 */
+	if(disconnect_script != NULL && d_scriptlen > 0) {
+		snprintf(disconnect_script+d_scriptlen,EXTRA_LEN," disconnect %s "MAC_FMT" "IP_FMT" ",host->rif->ifname,MAC_BUF(host->lladdr),IP_BUF(host->ipaddr));
+		fprintf(stderr,"spawning script %s\n",disconnect_script);
+		system(disconnect_script);
+	}
+	/* XXX: End Changes for drtek on 16-05-2015 */
 }
 
 static void fill_arp_packet(struct arp_packet *pkt, struct relayd_interface *rif,
@@ -280,7 +299,7 @@ static struct relayd_host *add_host(struct relayd_interface *rif, const uint8_t 
 
 	DPRINTF(1, "%s: adding host "IP_FMT" ("MAC_FMT")\n", rif->ifname,
 			IP_BUF(ipaddr), MAC_BUF(lladdr));
-	system(/www/cgi-bin/connect.sh IP_BUF(ipaddr) MAC_BUF(lladdr));
+
 	host = calloc(1, sizeof(*host));
 	INIT_LIST_HEAD(&host->routes);
 	host->rif = rif;
@@ -288,8 +307,11 @@ static struct relayd_host *add_host(struct relayd_interface *rif, const uint8_t 
 	memcpy(host->lladdr, lladdr, sizeof(host->lladdr));
 	list_add(&host->list, &rif->hosts);
 	host->timeout.cb = host_entry_timeout;
+#if 0
 	uloop_timeout_set(&host->timeout, host_timeout * 1000);
-
+#else
+	uloop_timeout_set(&host->timeout, disconnect_ping_timeout);
+#endif
 	add_arp(host);
 	if (rif->managed)
 		relayd_add_route(host, NULL);
@@ -307,6 +329,13 @@ static struct relayd_host *add_host(struct relayd_interface *rif, const uint8_t 
 		free(route);
 	}
 
+	/* XXX: Changes for drtek on 16-05-2015 */
+	if(connect_script != NULL && c_scriptlen > 0) {
+		snprintf(connect_script+c_scriptlen,EXTRA_LEN," connect %s "MAC_FMT" "IP_FMT" ",rif->ifname,MAC_BUF(lladdr),IP_BUF(ipaddr));
+		fprintf(stderr,"spawning connect script %s\n",connect_script);
+		system(connect_script);
+	}
+	/* XXX: End Changes for drtek on 16-05-2015 */
 	return host;
 }
 
@@ -523,7 +552,6 @@ static int init_interface(struct relayd_interface *rif)
 	struct sockaddr_in *sin;
 	struct ifreq ifr;
 	int fd = rif->fd.fd;
-	const int one = 1;
 #ifdef PACKET_RECV_TYPE
 	unsigned int pkt_type;
 #endif
@@ -562,11 +590,7 @@ static int init_interface(struct relayd_interface *rif)
 		sin = (struct sockaddr_in *) &ifr.ifr_addr;
 		memcpy(rif->src_ip, &sin->sin_addr.s_addr, sizeof(rif->src_ip));
 	}
-/* starts here */
-	if(setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) < 0) {
-		perror("setsockopt(ETH_P_ARP)");
-	}
-/* ends here */ 
+
 	if (bind(fd, (struct sockaddr *)sll, sizeof(struct sockaddr_ll)) < 0) {
 		perror("bind(ETH_P_ARP)");
 		return -1;
@@ -588,12 +612,6 @@ static int init_interface(struct relayd_interface *rif)
 	memcpy(&rif->bcast_sll, &rif->sll, sizeof(rif->bcast_sll));
 	sll = &rif->bcast_sll;
 	sll->sll_protocol = htons(ETH_P_IP);
-
-/* starts here */
-	if(setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) < 0) {
-		perror("setsockopt(ETH_P_IP)");
-	}
-/* ends here */
 
 	if (bind(fd, (struct sockaddr *)sll, sizeof(struct sockaddr_ll)) < 0) {
 		perror("bind(ETH_P_IP)");
@@ -704,7 +722,11 @@ static int usage(const char *progname)
 			"	-D		Enable DHCP forwarding\n"
 			"	-P		Disable DHCP options parsing\n"
 			"	-L <ipaddr>	Enable local access using <ipaddr> as source address\n"
-			" 	this is edited on 16.05.2015							"
+			/* XXX: Changes for drtek on 16-05-2015 */
+			"	-S <connected scriptname>	Script to run when a new connection occurs \n"
+			"	-C <disconnect scriptname>	Script to run when a host disconnects \n"
+			"	-X <timeout>	Timeout value in milliseconds for ping to connected host to check for disconnect\n"
+			/* XXX: End Changes for drtek on 16-05-2015 */
 			"\n",
 		progname);
 	return -1;
@@ -733,14 +755,23 @@ int main(int argc, char **argv)
 	forward_bcast = 0;
 	local_route_table = 0;
 	parse_dhcp = 1;
+
+	/* XXX: Changes for drtek on 16-05-2015 */
+	disconnect_ping_timeout = 1000;
+	connect_script = NULL;
+	c_scriptlen = 0;
+	disconnect_script = NULL;
+	d_scriptlen = 0;
+	/* XXX: End Changes for drtek on 16-05-2015 */
 	uloop_init();
 
-	while ((ch = getopt(argc, argv, "I:i:t:p:BDPdT:G:R:L:")) != -1) {
+	while ((ch = getopt(argc, argv, "I:i:t:p:BDPdT:G:R:L:S:C:X:")) != -1) {
 		switch(ch) {
 		case 'I':
 			managed = true;
 			/* fall through */
 		case 'i':
+			printf("%s:%u %s \n",__FILE__,__LINE__,optarg);
 			ifnum++;
 			rif = alloc_interface(optarg, managed);
 			if (!rif)
@@ -817,6 +848,23 @@ int main(int argc, char **argv)
 
 			relayd_add_pending_route((uint8_t *) &addr.s_addr, (uint8_t *) &addr2.s_addr, mask, 0);
 			break;
+			/* XXX: Changes for drtek on 16-05-2015 */
+		case 'S':
+			c_scriptlen = strlen(optarg);		
+			connect_script = malloc(c_scriptlen+EXTRA_LEN);
+			snprintf(connect_script,c_scriptlen+EXTRA_LEN,optarg);
+			break;
+		case 'C':
+			d_scriptlen = strlen(optarg);		
+			disconnect_script = malloc(d_scriptlen+EXTRA_LEN);
+			snprintf(disconnect_script,d_scriptlen+EXTRA_LEN,optarg);
+			break;
+		case 'X':
+			disconnect_ping_timeout = atoi(optarg);
+			if (disconnect_ping_timeout <= 0)
+				return usage(argv[0]);
+			break;
+			/* XXX: End Changes for drtek on 16-05-2015 */
 		case '?':
 		default:
 			return usage(argv[0]);
