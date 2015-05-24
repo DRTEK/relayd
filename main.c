@@ -44,7 +44,7 @@ static int forward_dhcp;
 static int parse_dhcp;
 
 /* XXX: Changes for drtek on 16-05-2015 */
-#define EXTRA_LEN	32	/* To store ip and mac that is being passed to the script */
+#define EXTRA_LEN	128	/* To store ip and mac that is being passed to the script */
 static char *connect_script;
 static int c_scriptlen;
 static char *disconnect_script;
